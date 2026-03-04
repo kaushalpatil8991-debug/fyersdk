@@ -3,8 +3,8 @@
 ## Project Overview
 Dual volume spike detector for NSE stocks. Monitors Fyers WebSocket ticks and alerts on large trades via Telegram + Google Sheets.
 
-- **Fyers detector**: Rs 3 Cr threshold, 722 large-cap symbols
-- **Penny detector**: Rs 52 Lakh threshold, 220 small-cap symbols
+- **Fyers detector**: Rs 3 Cr threshold, 540 large-cap symbols
+- **Penny detector**: Rs 52 Lakh threshold, 209 small-cap symbols
 - Both share a single Fyers access token (authenticated once)
 
 ## Architecture
@@ -15,7 +15,7 @@ main.py (FastAPI entry point)
   GET  /auth/callback     -> receives auth code via browser redirect (local dev)
   POST /webhook/telegram  -> receives auth codes + commands from Telegram
   lifespan:
-    startup: register webhook -> self-ping -> orchestrator.run()
+    startup: register webhooks (all 5 bots) -> self-ping -> orchestrator.run()
     shutdown: stop detectors
 
 Orchestrator (supervisor_service/ochestrator.py)
@@ -159,8 +159,8 @@ CREATE INDEX IF NOT EXISTS idx_sector_mappings_symbol ON sector_mappings (symbol
 ┌─────────────────────────────────────────────────────────────────────┐
 │                         STARTUP                                     │
 ├─────────────────────────────────────────────────────────────────────┤
-│ 1. main.py calls register_telegram_webhook(login_bot_token)         │
-│    → POST https://api.telegram.org/bot<TOKEN>/setWebhook            │
+│ 1. main.py calls register_telegram_webhook() on all 5 bot tokens    │
+│    → POST https://api.telegram.org/bot<TOKEN>/setWebhook (×5)       │
 │    → webhook_url = https://fyers-volume-spike-detector.onrender.com │
 │          /webhook/telegram                                          │
 │                                                                     │
@@ -212,8 +212,8 @@ CREATE INDEX IF NOT EXISTS idx_sector_mappings_symbol ON sector_mappings (symbol
 │                    DETECTORS START                                   │
 ├─────────────────────────────────────────────────────────────────────┤
 │ 10. Orchestrator builds both detectors with shared access_token     │
-│     → Fyers detector: 722 symbols, Rs 3Cr threshold                │
-│     → Penny detector: 220 symbols, Rs 52L threshold                │
+│     → Fyers detector: 540 symbols, Rs 3Cr threshold                │
+│     → Penny detector: 209 symbols, Rs 52L threshold                │
 │     → Each gets its own trade_sender + summary_sender               │
 │                                                                     │
 │ 11. RunController.start() launches each detector in a thread        │
@@ -346,7 +346,7 @@ At 16:30 IST (SummaryScheduler checks every 30s):
 - **Shared token**: One FyersAuthenticator instance, token passed to both services
 - **Isolated services**: `FyersService` and `PennyService` each own their detector, controller, sheets, and senders — no shared state
 - **Isolated summaries**: `FyersSummaryService` and `PennySummaryService` each own their `SummaryGenerator` — no shared state
-- **Webhook not polling**: No `getUpdates` loop, Telegram pushes to `/webhook/telegram`
+- **Webhook on all bots**: All 5 bots have webhooks set to `/webhook/telegram` — commands work from any bot chat
 - **Local dev auth**: `GET /auth/callback?auth_code=...` endpoint for browser-based auth without webhook
 - **Supabase not local JSON**: Token persists across deploys, INSERT-based audit trail
 - **Parameterized detector**: Single `VolumeSpikeDetector` class serves both fyers/penny via `DetectorConfig`
@@ -401,7 +401,7 @@ At 16:30 IST (SummaryScheduler checks every 30s):
 - Orchestrator creates 5 `TelegramSender` instances and passes relevant ones to authenticator/detectors
 - Removed `trade_chat_id` / `summary_chat_id` from `DetectorConfig` — senders passed directly to detector constructor
 - `.env` restructured: 10 telegram vars (5 `*_BOT_TOKEN` + 5 `*_CHAT_ID`)
-- Webhook + commands registered only on login bot
+- Webhook registered on all 5 bots; commands registered on login bot
 
 ### 2026-03-04 - Summary service
 - Merged `tests/fyerssum.py` and `tests/pennysum.py` into `services/summary_service/`
@@ -441,3 +441,9 @@ At 16:30 IST (SummaryScheduler checks every 30s):
 - Updated `sector_mapper.py` — no longer loads from JSON at import, initialized via `init_sector_mapping()` from Supabase data
 - Updated `ochestrator.py` — replaced `_load_symbols_and_sectors()` JSON reads with `SymbolManager` queries
 - Symbols can now be added/deactivated via Supabase dashboard without redeploying
+
+### 2026-03-04 - Cleaned invalid symbols + webhooks on all 5 bots
+- Removed 193 invalid symbols from `stock_symbols` (182 fyers + 11 penny) and 191 from `sector_mappings` in Supabase
+- Active symbols now: 540 fyers + 209 penny (down from 722 + 220)
+- Registered Telegram webhook on all 5 bots (login, fyers_trade, fyers_summary, penny_trade, penny_summary) — commands now work from any bot chat
+- Bot commands (`/hld`, `/rst`, `/snd`, `/sdt`) still registered only on login bot
