@@ -46,10 +46,9 @@ async def telegram_webhook(request: Request):
     global _pending_summary_date
 
     body = await request.json()
-    log.info("Webhook received update")
-
     message = body.get("message", {})
     text = message.get("text", "")
+    log.info(f"Webhook received: {text!r}")
 
     # Check for commands first
     command, rest = parse_command(text)
