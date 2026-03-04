@@ -30,10 +30,16 @@ async def lifespan(app: FastAPI):
     """Startup/shutdown lifecycle."""
     log.info("Starting up...")
 
-    # Register Telegram webhook and bot commands on login bot
-    login_bot_token = config.telegram.login.bot_token
-    register_telegram_webhook(login_bot_token)
-    register_bot_commands(login_bot_token)
+    # Register Telegram webhook on all 5 bots and commands on login bot
+    for channel in [
+        config.telegram.login,
+        config.telegram.fyers_trade,
+        config.telegram.fyers_summary,
+        config.telegram.penny_trade,
+        config.telegram.penny_summary,
+    ]:
+        register_telegram_webhook(channel.bot_token)
+    register_bot_commands(config.telegram.login.bot_token)
 
     # Start self-ping for Render keep-alive
     start_self_ping()
