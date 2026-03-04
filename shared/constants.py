@@ -19,7 +19,7 @@ TOKEN_VALIDITY_SECONDS = 28800        # 8 hours
 
 # Webhook
 WEBHOOK_PATH = "/webhook/telegram"
-BASE_URL = "https://fyers-volume-spike-detector.onrender.com"
+BASE_URL = "https://fyersdk.onrender.com"
 HEALTH_CHECK_URL = f"{BASE_URL}/health"
 SELF_PING_INTERVAL = 420              # 7 min
 SUMMARY_SEND_TIME = "16:30"           # 4:30 PM IST
