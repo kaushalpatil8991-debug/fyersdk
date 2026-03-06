@@ -1,4 +1,5 @@
 """Telegram webhook endpoint for receiving auth codes and commands."""
+import re
 from fastapi import APIRouter, Request
 from shared.logger import get_logger
 from services.telegram_service.command_parser import parse_command, parse_date
@@ -24,6 +25,12 @@ def init_auth_router(auth_state, orchestrator=None, login_sender=None):
     _orchestrator = orchestrator
     _login_sender = login_sender
     return router
+
+
+def _extract_auth_code(text: str) -> str | None:
+    """Extract auth_code from a Fyers redirect URL."""
+    match = re.search(r'auth_code=([^&\s]+)', text)
+    return match.group(1) if match else None
 
 
 @router.get("/auth/callback")
@@ -75,6 +82,15 @@ async def telegram_webhook(request: Request):
     # Check if we're waiting for a date (from /sdt)
     if _pending_summary_date and text.strip():
         return await _handle_summary_date_input(text)
+
+    # Check for auth_code in message (user pasting redirect URL from Fyers)
+    if "auth_code=" in text and _auth_state:
+        auth_code = _extract_auth_code(text)
+        if auth_code:
+            _auth_state.pending_auth_code = auth_code
+            _auth_state.auth_event.set()
+            log.info("Auth code received via Telegram message!")
+            return {"status": "auth_code_received"}
 
     return {"status": "ok"}
 
