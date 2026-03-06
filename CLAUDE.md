@@ -454,10 +454,8 @@ At 16:30 IST (SummaryScheduler checks every 30s):
 
 ### 2026-03-05 - Fix webhook command leakage
 - Fixed `_pending_summary_date` flag leaking across commands — any command (`/hld`, `/rst`, `/snd`, or unrecognized `/` commands) now resets the flag
-- Removed auth code handling from webhook handler — auth codes now only via `GET /auth/callback` (browser redirect)
-- Removed `extract_auth_code` import from `server.py`
 - Added try/except around `request.json()` — malformed requests (bot scanners) return 200 instead of crashing with 500
-- Webhook processing order is now: commands → `/sdt` date input → ignore
+- Webhook processing order is now: commands → `/sdt` date input → auth code → ignore
 
 ### 2026-03-05 - TickDispatcher (shared WebSocket router)
 - Added `TickDispatcher` class to `services/detector_service/websocket_manager.py`
@@ -469,3 +467,10 @@ At 16:30 IST (SummaryScheduler checks every 30s):
 - `VolumeSpikeDetector.start()` now just blocks via `stop_event.wait()` — no longer owns a WebSocket
 - `RunController` unchanged — runs detector in a thread, ticks arrive via dispatcher callback
 - Each service (`FyersService` / `PennyService`) no longer creates its own WebSocket connection
+
+### 2026-03-06 - Fix auth loop and command handling
+- **Auth link spam outside market hours**: Moved `authenticate()` call from before the main loop to inside it — auth now only runs during market hours (after scheduling check)
+- **`/hld` and `/rst` ignored during auth**: Added `_cancel_event` to `FyersAuthenticator` with `cancel_auth()` / `reset_cancel()` methods. `hold()` and `request_restart()` now cancel any in-progress auth wait
+- **Auth code not received from Telegram**: Re-added `_extract_auth_code()` to `server.py` — webhook handler now extracts `auth_code=` from user-pasted redirect URLs (was removed in 2026-03-05 refactor, breaking the primary auth flow since `FYERS_REDIRECT_URI` points to `fyersauth.vercel.app`, not the app's `/auth/callback`)
+- Orchestrator tracks `services_built` flag — builds services once after first successful auth, not before the loop
+- `_re_authenticate()` now handles auth cancellation gracefully (returns without updating tokens)
