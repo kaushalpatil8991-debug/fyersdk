@@ -75,7 +75,9 @@ class FyersAuthenticator:
         self.auth_state.auth_event.clear()
         self.auth_state.pending_auth_code = None
 
-        await self._send_auth_url()
+        # Create session once — reuse for resends so auth code matches this session
+        session = self._create_session()
+        await self._send_auth_msg(session)
 
         # 3) Wait for auth_code from webhook (with periodic resend)
         while True:
@@ -88,8 +90,8 @@ class FyersAuthenticator:
                 if self._cancel_event.is_set():
                     log.info("Auth cancelled during timeout")
                     return False
-                log.info("5 min elapsed, resending auth URL...")
-                await self._send_auth_url()
+                log.info("5 min elapsed, resending auth URL with fresh TOTP...")
+                await self._send_auth_msg(session)
                 self.auth_state.auth_event.clear()
                 continue
 
@@ -105,9 +107,10 @@ class FyersAuthenticator:
             await self.login_sender.send_async(auth_failure_message(error_msg))
             raise AuthenticationError(error_msg)
 
-        # 4) Exchange code for token
-        self.auth_state.current_session.set_token(auth_code)
-        response = self.auth_state.current_session.generate_token()
+        # 4) Exchange code for token using the SAME session that generated the URL
+        log.info(f"Auth code received ({auth_code[:20]}...), exchanging for token...")
+        session.set_token(auth_code)
+        response = session.generate_token()
 
         if response and response.get("s") == "ok":
             self.access_token = response["access_token"]
@@ -125,8 +128,8 @@ class FyersAuthenticator:
         await self.login_sender.send_async(auth_failure_message(error_msg))
         raise AuthenticationError(error_msg)
 
-    async def _send_auth_url(self):
-        """Create session, generate URL, send to Telegram."""
+    def _create_session(self) -> fyersModel.SessionModel:
+        """Create a new Fyers session and generate its auth URL."""
         session = fyersModel.SessionModel(
             client_id=self.cfg.client_id,
             secret_key=self.cfg.secret_key,
@@ -135,9 +138,11 @@ class FyersAuthenticator:
             grant_type="authorization_code"
         )
         self.auth_state.current_session = session
-        url = session.generate_authcode()
-        self.auth_state.current_auth_url = url
-        totp_code = self.totp.generate()
+        self.auth_state.current_auth_url = session.generate_authcode()
+        return session
 
-        msg = auth_required_message(url, totp_code)
+    async def _send_auth_msg(self, session: fyersModel.SessionModel):
+        """Send the auth URL + fresh TOTP to Telegram (reuses existing session)."""
+        totp_code = self.totp.generate()
+        msg = auth_required_message(self.auth_state.current_auth_url, totp_code)
         await self.login_sender.send_async(msg)
