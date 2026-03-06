@@ -26,6 +26,17 @@ class FyersAuthenticator:
         self.access_token: str | None = None
         self.fyers_model = None
         self.is_authenticated = False
+        self._cancel_event = asyncio.Event()
+
+    def cancel_auth(self):
+        """Cancel any in-progress authentication wait."""
+        self._cancel_event.set()
+        # Also wake up the auth_event wait so authenticate() can exit
+        self.auth_state.auth_event.set()
+
+    def reset_cancel(self):
+        """Clear cancellation flag before a new auth attempt."""
+        self._cancel_event.clear()
 
     def check_token_with_fyers(self) -> tuple[bool, str]:
         """Verify token by calling Fyers profile API."""
@@ -73,11 +84,20 @@ class FyersAuthenticator:
                     self.auth_state.auth_event.wait(),
                     timeout=300  # 5 min
                 )
-                break  # got the code
             except asyncio.TimeoutError:
+                if self._cancel_event.is_set():
+                    log.info("Auth cancelled during timeout")
+                    return False
                 log.info("5 min elapsed, resending auth URL...")
                 await self._send_auth_url()
                 self.auth_state.auth_event.clear()
+                continue
+
+            # Woke up — check if cancelled or got a real auth code
+            if self._cancel_event.is_set():
+                log.info("Auth cancelled")
+                return False
+            break
 
         auth_code = self.auth_state.pending_auth_code
         if not auth_code:
