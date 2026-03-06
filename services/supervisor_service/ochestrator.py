@@ -71,12 +71,14 @@ class Orchestrator:
         self.fyers.stop()
         self.penny.stop()
         self._close_dispatcher()
+        self.authenticator.cancel_auth()
         log.info("Detectors on hold")
 
     def request_restart(self):
         """Signal the orchestrator loop to restart and re-authenticate."""
         self.restart_requested = True
         self.on_hold = False
+        self.authenticator.cancel_auth()
         log.info("Restart requested")
 
     def _any_token_expired(self) -> bool:
@@ -103,16 +105,22 @@ class Orchestrator:
         self.penny.stop()
         self._close_dispatcher()
 
-        await self.authenticator.authenticate()
+        success = await self._authenticate_with_checks()
+        if not success:
+            return  # cancelled by /hld or /rst
 
         token = self.authenticator.access_token
         self.fyers.update_token(token)
         self.penny.update_token(token)
 
+    async def _authenticate_with_checks(self) -> bool:
+        """Run auth flow, respecting cancellation from /hld and /rst."""
+        self.authenticator.reset_cancel()
+        result = await self.authenticator.authenticate()
+        return result is not False
+
     async def run(self):
         """Main supervisor loop."""
-        await self.authenticator.authenticate()
-
         # Start summary scheduler (runs independently at 16:30 IST)
         generators = [self.fyers_summary.generator, self.penny_summary.generator]
         summary_scheduler = SummaryScheduler(generators)
@@ -124,10 +132,8 @@ class Orchestrator:
         sectors = self.symbol_manager.load_sector_mapping()
         init_sector_mapping(sectors)
 
-        # Build each service with its own symbols
-        token = self.authenticator.access_token
-        self.fyers.build(token, fyers_symbols, sectors)
-        self.penny.build(token, penny_symbols, sectors)
+        # Track whether services have been built with a token
+        services_built = False
 
         while True:
             try:
@@ -137,6 +143,7 @@ class Orchestrator:
                     self.penny.stop()
                     self._close_dispatcher()
                     await self._re_authenticate()
+                    continue
 
                 if self.on_hold:
                     await asyncio.sleep(5)
@@ -151,8 +158,23 @@ class Orchestrator:
                     await asyncio.sleep(60)
                     continue
 
+                # Authenticate if we don't have a token yet
+                if not self.authenticator.is_authenticated:
+                    success = await self._authenticate_with_checks()
+                    if not success:
+                        # Auth was cancelled by /hld or /rst — loop back
+                        continue
+
+                # Build services once after first successful auth
+                if not services_built:
+                    token = self.authenticator.access_token
+                    self.fyers.build(token, fyers_symbols, sectors)
+                    self.penny.build(token, penny_symbols, sectors)
+                    services_built = True
+
                 if self._any_token_expired():
                     await self._re_authenticate()
+                    continue
 
                 if not self._dispatcher:
                     self._connect_dispatcher()
