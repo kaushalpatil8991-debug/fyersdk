@@ -1,0 +1,195 @@
+"""Orchestrates both detectors with market-hour scheduling."""
+import asyncio
+from shared.logger import get_logger
+from shared.config_loader import AppConfig
+from services.auth_service.authenticator import FyersAuthenticator
+from services.auth_service.token_manager import TokenManager
+from services.auth_service.models import AuthState
+from services.telegram_service import TelegramSender
+from services.telegram_service.message_template import monitoring_started_message
+from services.summary_service import SummaryScheduler
+from services.sector_service import SymbolManager, init_sector_mapping
+from services.detector_service.websocket_manager import TickDispatcher
+from services.fyers_service import FyersService, FyersSummaryService
+from services.penny_service import PennyService, PennySummaryService
+from .schedular import is_market_hours
+
+log = get_logger("orchestrator")
+
+
+class Orchestrator:
+    def __init__(self, config: AppConfig, auth_state: AuthState):
+        self.config = config
+        self.auth_state = auth_state
+
+        # Create 5 TelegramSender instances (one per bot+chat pair)
+        self.login_sender = TelegramSender(config.telegram.login)
+        self.fyers_trade_sender = TelegramSender(config.telegram.fyers_trade)
+        self.fyers_summary_sender = TelegramSender(config.telegram.fyers_summary)
+        self.penny_trade_sender = TelegramSender(config.telegram.penny_trade)
+        self.penny_summary_sender = TelegramSender(config.telegram.penny_summary)
+
+        self.token_manager = TokenManager(config)
+        self.authenticator = FyersAuthenticator(
+            config, self.token_manager,
+            self.login_sender,
+            auth_state,
+        )
+
+        # Isolated services — each manages its own detector + controller
+        self.fyers = FyersService(
+            config.fyers.client_id, config.google.fyers_sheet_id,
+            config.google.credentials,
+            self.fyers_trade_sender, self.fyers_summary_sender,
+        )
+        self.penny = PennyService(
+            config.fyers.client_id, config.google.penny_sheet_id,
+            config.google.credentials,
+            self.penny_trade_sender, self.penny_summary_sender,
+        )
+
+        self.on_hold = False
+        self.restart_requested = False
+        self._dispatcher: TickDispatcher | None = None
+
+        # Isolated summary services
+        self.fyers_summary = FyersSummaryService(
+            config.google.credentials,
+            config.google.fyers_sheet_id, self.fyers_summary_sender,
+        )
+        self.penny_summary = PennySummaryService(
+            config.google.credentials,
+            config.google.penny_sheet_id, self.penny_summary_sender,
+        )
+
+        # Symbol/sector manager (Supabase, auto-seeds from JSON on first run)
+        self.symbol_manager = SymbolManager(config.supabase.dsn)
+
+    def hold(self):
+        """Stop all detectors and enter hold mode."""
+        self.on_hold = True
+        self.fyers.stop()
+        self.penny.stop()
+        self._close_dispatcher()
+        self.authenticator.cancel_auth()
+        log.info("Detectors on hold")
+
+    def request_restart(self):
+        """Signal the orchestrator loop to restart and re-authenticate."""
+        self.restart_requested = True
+        self.on_hold = False
+        self.authenticator.cancel_auth()
+        log.info("Restart requested")
+
+    def _any_token_expired(self) -> bool:
+        return self.fyers.token_expired or self.penny.token_expired
+
+    def _close_dispatcher(self):
+        if self._dispatcher:
+            self._dispatcher.close()
+            self._dispatcher = None
+
+    def _connect_dispatcher(self):
+        """Create and connect a shared TickDispatcher for both detectors."""
+        detectors = [d for d in (self.fyers.detector, self.penny.detector) if d]
+        token = self.authenticator.access_token
+        self._dispatcher = TickDispatcher(
+            self.config.fyers.client_id, token, detectors
+        )
+        self._dispatcher.connect()
+
+    async def _re_authenticate(self):
+        """Stop detectors, get fresh token, update both services."""
+        log.info("Token rejected by Fyers — re-authenticating...")
+        self.fyers.stop()
+        self.penny.stop()
+        self._close_dispatcher()
+
+        success = await self._authenticate_with_checks()
+        if not success:
+            return  # cancelled by /hld or /rst
+
+        token = self.authenticator.access_token
+        self.fyers.update_token(token)
+        self.penny.update_token(token)
+
+    async def _authenticate_with_checks(self) -> bool:
+        """Run auth flow, respecting cancellation from /hld and /rst."""
+        self.authenticator.reset_cancel()
+        result = await self.authenticator.authenticate()
+        return result is not False
+
+    async def run(self):
+        """Main supervisor loop."""
+        # Start summary scheduler (runs independently at 16:30 IST)
+        generators = [self.fyers_summary.generator, self.penny_summary.generator]
+        summary_scheduler = SummaryScheduler(generators)
+        asyncio.create_task(summary_scheduler.run())
+
+        # Load symbols and sectors from Supabase
+        fyers_symbols = self.symbol_manager.load_symbols("fyers")
+        penny_symbols = self.symbol_manager.load_symbols("penny")
+        sectors = self.symbol_manager.load_sector_mapping()
+        init_sector_mapping(sectors)
+
+        # Track whether services have been built with a token
+        services_built = False
+
+        while True:
+            try:
+                if self.restart_requested:
+                    self.restart_requested = False
+                    self.fyers.stop()
+                    self.penny.stop()
+                    self._close_dispatcher()
+                    await self._re_authenticate()
+                    continue
+
+                if self.on_hold:
+                    await asyncio.sleep(5)
+                    continue
+
+                if self.config.scheduling_enabled and not is_market_hours():
+                    if self.fyers.is_running or self.penny.is_running:
+                        log.info("Outside market hours, stopping detectors")
+                        self.fyers.stop()
+                        self.penny.stop()
+                        self._close_dispatcher()
+                    await asyncio.sleep(60)
+                    continue
+
+                # Authenticate if we don't have a token yet
+                if not self.authenticator.is_authenticated:
+                    success = await self._authenticate_with_checks()
+                    if not success:
+                        # Auth was cancelled by /hld or /rst — loop back
+                        continue
+
+                # Build services once after first successful auth
+                if not services_built:
+                    token = self.authenticator.access_token
+                    self.fyers.build(token, fyers_symbols, sectors)
+                    self.penny.build(token, penny_symbols, sectors)
+                    services_built = True
+
+                if self._any_token_expired():
+                    await self._re_authenticate()
+                    continue
+
+                if not self._dispatcher:
+                    self._connect_dispatcher()
+                    await self.login_sender.send_async(
+                        monitoring_started_message(
+                            len(self.fyers.detector.config.symbols),
+                            len(self.penny.detector.config.symbols),
+                        )
+                    )
+
+                self.fyers.start()
+                self.penny.start()
+
+                await asyncio.sleep(5)
+
+            except Exception as e:
+                log.error(f"Supervisor error: {e}")
+                await asyncio.sleep(10)
