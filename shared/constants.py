@@ -9,7 +9,7 @@ MARKET_END_TIME = "16:00"
 
 # Detection thresholds
 FYERS_TRADE_THRESHOLD = 30_000_000    # Rs 3 crore
-PENNY_TRADE_THRESHOLD = 5_500_000     # Rs 52 lakh
+PENNY_TRADE_THRESHOLD = 5_000_000     # Rs 50 lakh (0.50 Cr)
 MIN_VOLUME_SPIKE = 1000
 
 # Timing
