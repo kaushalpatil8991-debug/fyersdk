@@ -17,12 +17,15 @@ from services.auth_service.server import init_auth_router
 from services.auth_service.tools import register_telegram_webhook, register_bot_commands
 from services.supervisor_service.ochestrator import Orchestrator
 from services.supervisor_service.health_monitor import start_self_ping
+from services.mcp_service import build_mcp
 
 log = get_logger("main")
 
 config = load_config()
 auth_state = AuthState()
 orchestrator = Orchestrator(config, auth_state)
+mcp = build_mcp(orchestrator)
+mcp_http_app = mcp.streamable_http_app()
 
 
 @asynccontextmanager
@@ -47,7 +50,9 @@ async def lifespan(app: FastAPI):
     # Start orchestrator in background task
     task = asyncio.create_task(orchestrator.run())
 
-    yield
+    # Run MCP session manager for the lifetime of the app
+    async with mcp.session_manager.run():
+        yield
 
     # Shutdown
     log.info("Shutting down...")
@@ -74,6 +79,11 @@ async def health_check():
         "fyers_running": orchestrator.fyers.is_running,
         "penny_running": orchestrator.penny.is_running,
     }
+
+
+# Mount MCP endpoint (served at /mcp, or /mcp-<secret> if MCP_PATH_SECRET set).
+# Mounted last so it never shadows the routes above.
+app.mount("/", mcp_http_app)
 
 
 if __name__ == "__main__":

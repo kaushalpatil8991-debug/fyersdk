@@ -30,6 +30,7 @@ class TelegramConfig:
     fyers_summary: TelegramChannel
     penny_trade: TelegramChannel
     penny_summary: TelegramChannel
+    news: TelegramChannel | None = None  # optional — news bot (MCP send)
 
 
 @dataclass
@@ -61,6 +62,14 @@ def _channel(token_env: str, chat_id_env: str) -> TelegramChannel:
     )
 
 
+def _optional_channel(token_env: str, chat_id_env: str) -> TelegramChannel | None:
+    token = os.getenv(token_env, "").strip()
+    chat_id = os.getenv(chat_id_env, "").strip()
+    if token and chat_id:
+        return TelegramChannel(bot_token=token, chat_id=chat_id)
+    return None
+
+
 def load_config() -> AppConfig:
     """Build AppConfig from environment variables."""
     google_creds = _load_google_credentials()
@@ -79,6 +88,7 @@ def load_config() -> AppConfig:
             fyers_summary=_channel("FYERS_SUMMARY_BOT_TOKEN", "FYERS_SUMMARY_CHAT_ID"),
             penny_trade=_channel("PENNY_TRADE_BOT_TOKEN", "PENNY_TRADE_CHAT_ID"),
             penny_summary=_channel("PENNY_SUMMARY_BOT_TOKEN", "PENNY_SUMMARY_CHAT_ID"),
+            news=_optional_channel("NEWS_BOT_TOKEN", "NEWS_CHAT_ID"),
         ),
         google=GoogleConfig(
             credentials=google_creds,
