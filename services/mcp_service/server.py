@@ -7,6 +7,7 @@ https://<your-app>.onrender.com/mcp
 import os
 
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 
 from shared.logger import get_logger
 from .news_tools import register_news_tools
@@ -53,6 +54,11 @@ def build_mcp(orchestrator=None) -> FastMCP:
         ),
         stateless_http=True,
         json_response=True,
+        # Public server behind Render — disable localhost-only Host header
+        # check (DNS rebinding protection), which 421-rejects onrender.com.
+        transport_security=TransportSecuritySettings(
+            enable_dns_rebinding_protection=False,
+        ),
     )
     mcp.settings.streamable_http_path = mcp_path()
 
