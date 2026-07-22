@@ -11,6 +11,8 @@ from services.telegram_service.message_template import (
 from .token_manager import TokenManager
 from .totp_handler import TOTPHandler
 from .models import AuthState
+from . import totp_login
+from shared.constants import AUTO_LOGIN_MAX_ATTEMPTS, AUTO_LOGIN_RETRY_DELAY
 
 log = get_logger("authenticator")
 
@@ -56,11 +58,11 @@ class FyersAuthenticator:
             return False, str(e)
 
     async def authenticate(self) -> bool:
-        """Full auth flow: check stored token -> if expired, webhook-based flow."""
-        # 1) Try stored token
-        valid, msg = self.token_manager.is_token_valid_by_time()
+        """Auth ladder: cached -> refresh -> automated TOTP -> manual link."""
+        # Strategy 1: cached token (time-valid AND live-verified)
+        valid, _ = self.token_manager.is_token_valid_by_time()
         if valid:
-            token, _, _ = self.token_manager.load_token()
+            token, _, _, _ = self.token_manager.load_token()
             self.access_token = token
             ok, fmsg = self.check_token_with_fyers()
             if ok:
@@ -69,9 +71,65 @@ class FyersAuthenticator:
                 await self.login_sender.send_async(auth_success_message())
                 return True
             log.warning(f"Stored token invalid from Fyers: {fmsg}")
+        if self._cancel_event.is_set():
+            return False
 
-        # 2) Fresh auth via webhook
-        log.info("Starting fresh authentication...")
+        # Strategy 2: PIN-only refresh
+        _, _, _, refresh_token = self.token_manager.load_token()
+        if refresh_token:
+            log.info("Attempting PIN-only token refresh...")
+            tokens = await asyncio.to_thread(
+                totp_login.refresh_access_token,
+                refresh_token, self.cfg.client_id, self.cfg.secret_key, self.cfg.pin,
+            )
+            if tokens.get("access_token") and await self._apply_tokens(tokens):
+                return True
+        if self._cancel_event.is_set():
+            return False
+
+        # Strategy 3: full automated TOTP (bounded, cancellable)
+        log.info("Starting automated TOTP login...")
+        tokens = await asyncio.to_thread(
+            totp_login.full_totp_login_with_retry,
+            self._creds(), AUTO_LOGIN_MAX_ATTEMPTS, AUTO_LOGIN_RETRY_DELAY,
+            lambda: self._cancel_event.is_set(),
+        )
+        if tokens.get("access_token") and await self._apply_tokens(tokens):
+            return True
+        if self._cancel_event.is_set():
+            return False
+
+        # Strategy 4: manual Telegram-link fallback
+        log.warning("Automated login failed — falling back to manual auth link")
+        return await self._manual_login()
+
+    def _creds(self) -> dict:
+        """Credential bundle for the headless TOTP flow."""
+        return {
+            "client_id": self.cfg.client_id,
+            "secret_key": self.cfg.secret_key,
+            "redirect_uri": self.cfg.redirect_uri,
+            "username": self.cfg.username,
+            "pin": self.cfg.pin,
+            "totp_secret": self.cfg.totp_secret,
+        }
+
+    async def _apply_tokens(self, tokens: dict) -> bool:
+        """Adopt a fresh {access_token, refresh_token}: verify live, persist, notify."""
+        self.access_token = tokens.get("access_token")
+        ok, fmsg = self.check_token_with_fyers()  # sets self.fyers_model on success
+        if not ok:
+            log.warning(f"New token failed live check: {fmsg}")
+            return False
+        self.token_manager.save_token(
+            self.access_token, refresh_token=tokens.get("refresh_token"))
+        self.is_authenticated = True
+        log.info("Authentication successful (automated)!")
+        await self.login_sender.send_async(auth_success_message())
+        return True
+
+    async def _manual_login(self) -> bool:
+        """Existing webhook flow: send auth URL + TOTP, wait for auth_code."""
         self.auth_state.auth_event.clear()
         self.auth_state.pending_auth_code = None
 
@@ -79,7 +137,7 @@ class FyersAuthenticator:
         session = self._create_session()
         await self._send_auth_msg(session)
 
-        # 3) Wait for auth_code from webhook (with periodic resend)
+        # Wait for auth_code from webhook (with periodic resend)
         while True:
             try:
                 await asyncio.wait_for(
@@ -107,7 +165,7 @@ class FyersAuthenticator:
             await self.login_sender.send_async(auth_failure_message(error_msg))
             raise AuthenticationError(error_msg)
 
-        # 4) Exchange code for token using the SAME session that generated the URL
+        # Exchange code for token using the SAME session that generated the URL
         log.info(f"Auth code received ({auth_code[:20]}...), exchanging for token...")
         session.set_token(auth_code)
         response = session.generate_token()
