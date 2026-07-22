@@ -257,3 +257,33 @@ def full_totp_login(creds: dict) -> dict:
         return {}
     return step5_validate_auth_code(
         auth_code, creds["client_id"], creds["secret_key"], creds["redirect_uri"])
+
+
+def full_totp_login_with_retry(creds: dict, max_attempts: int = 5, delay: int = 60,
+                               should_cancel: Optional[Callable[[], bool]] = None) -> dict:
+    """Re-run full_totp_login up to max_attempts, sleeping `delay`s between tries.
+
+    should_cancel() is polled before each attempt and during the inter-attempt
+    wait (in 1s slices) so /hld and /rst interrupt promptly. Returns {} if
+    cancelled or exhausted.
+    """
+    max_attempts = max(1, int(max_attempts))
+    for attempt in range(1, max_attempts + 1):
+        if should_cancel and should_cancel():
+            log.info("Auto-login cancelled before attempt %d", attempt)
+            return {}
+        tokens = full_totp_login(creds)
+        if tokens.get("access_token"):
+            if attempt > 1:
+                log.info(f"Auto-login succeeded on attempt {attempt}/{max_attempts}")
+            return tokens
+        if attempt < max_attempts:
+            log.warning(
+                f"Auto-login attempt {attempt}/{max_attempts} failed; retrying in {delay}s")
+            for _ in range(int(delay)):
+                if should_cancel and should_cancel():
+                    log.info("Auto-login cancelled during retry wait")
+                    return {}
+                time.sleep(1)
+    log.error(f"Auto-login failed after {max_attempts} attempt(s)")
+    return {}

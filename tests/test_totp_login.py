@@ -171,3 +171,59 @@ def test_full_totp_login_aborts_on_step2_failure(monkeypatch):
     creds = {"client_id": "CID-100", "secret_key": "SEC", "redirect_uri": "r",
              "username": "FY123", "pin": "1234", "totp_secret": "S"}
     assert totp.full_totp_login(creds) == {}
+
+
+# ---- full_totp_login_with_retry ----
+
+def test_retry_succeeds_on_third_attempt(monkeypatch):
+    calls = {"n": 0}
+
+    def _login(creds):
+        calls["n"] += 1
+        return {"access_token": "AT"} if calls["n"] == 3 else {}
+
+    monkeypatch.setattr(totp, "full_totp_login", _login)
+    monkeypatch.setattr(totp.time, "sleep", lambda s: None)
+    creds = {"username": "FY123"}
+    out = totp.full_totp_login_with_retry(creds, max_attempts=5, delay=60)
+    assert out == {"access_token": "AT"}
+    assert calls["n"] == 3
+
+
+def test_retry_gives_up_after_max_attempts(monkeypatch):
+    calls = {"n": 0}
+
+    def _login(creds):
+        calls["n"] += 1
+        return {}
+
+    monkeypatch.setattr(totp, "full_totp_login", _login)
+    monkeypatch.setattr(totp.time, "sleep", lambda s: None)
+    out = totp.full_totp_login_with_retry({"username": "FY"}, max_attempts=5, delay=60)
+    assert out == {}
+    assert calls["n"] == 5
+
+
+def test_retry_stops_when_cancelled_before_first_attempt(monkeypatch):
+    calls = {"n": 0}
+
+    def _login(creds):
+        calls["n"] += 1
+        return {}
+
+    monkeypatch.setattr(totp, "full_totp_login", _login)
+    monkeypatch.setattr(totp.time, "sleep", lambda s: None)
+    out = totp.full_totp_login_with_retry(
+        {"username": "FY"}, max_attempts=5, delay=60, should_cancel=lambda: True)
+    assert out == {}
+    assert calls["n"] == 0
+
+
+def test_retry_waits_between_attempts_in_cancellable_slices(monkeypatch):
+    """delay is consumed as 1s sleeps so cancellation is responsive."""
+    sleeps = {"n": 0}
+    monkeypatch.setattr(totp, "full_totp_login", lambda creds: {})
+    monkeypatch.setattr(totp.time, "sleep", lambda s: sleeps.__setitem__("n", sleeps["n"] + 1))
+    totp.full_totp_login_with_retry({"username": "FY"}, max_attempts=2, delay=3)
+    # one 3-slice wait between the 2 attempts (no wait after the last)
+    assert sleeps["n"] == 3
