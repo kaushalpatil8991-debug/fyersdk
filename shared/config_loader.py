@@ -14,6 +14,7 @@ class FyersConfig:
     redirect_uri: str
     totp_secret: str
     pin: str
+    username: str = ""   # Fyers login id (fy_id) for headless TOTP login
 
 
 @dataclass
@@ -81,6 +82,7 @@ def load_config() -> AppConfig:
             redirect_uri=os.environ["FYERS_REDIRECT_URI"],
             totp_secret=os.environ["FYERS_TOTP_SECRET"],
             pin=os.environ["FYERS_PIN"],
+            username=os.getenv("FYERS_USERNAME", ""),
         ),
         telegram=TelegramConfig(
             login=_channel("LOGIN_BOT_TOKEN", "LOGIN_CHAT_ID"),

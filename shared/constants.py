@@ -17,6 +17,10 @@ TELEGRAM_AUTH_TIMEOUT = 300
 LOGIN_URL_RETRY_INTERVAL = 300        # 5 min
 TOKEN_VALIDITY_SECONDS = 28800        # 8 hours
 
+# Automated login (headless TOTP) retry policy
+AUTO_LOGIN_MAX_ATTEMPTS = 5           # attempts before manual-link fallback
+AUTO_LOGIN_RETRY_DELAY = 60           # seconds between attempts
+
 # Webhook
 WEBHOOK_PATH = "/webhook/telegram"
 BASE_URL = "https://fyersdk.onrender.com"

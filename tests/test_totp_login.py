@@ -227,3 +227,9 @@ def test_retry_waits_between_attempts_in_cancellable_slices(monkeypatch):
     totp.full_totp_login_with_retry({"username": "FY"}, max_attempts=2, delay=3)
     # one 3-slice wait between the 2 attempts (no wait after the last)
     assert sleeps["n"] == 3
+
+
+def test_auto_login_constants():
+    from shared import constants
+    assert constants.AUTO_LOGIN_MAX_ATTEMPTS == 5
+    assert constants.AUTO_LOGIN_RETRY_DELAY == 60
