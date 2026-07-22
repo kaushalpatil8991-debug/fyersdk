@@ -97,6 +97,7 @@ Orchestrator (supervisor_service/ochestrator.py)
 | `FYERS_REDIRECT_URI` | OAuth redirect URI |
 | `FYERS_TOTP_SECRET` | TOTP secret for 2FA |
 | `FYERS_PIN` | Fyers account PIN |
+| `FYERS_USERNAME` | Fyers login id (fy_id, e.g. XK00893) for headless TOTP login |
 | `LOGIN_BOT_TOKEN` | Login bot token |
 | `LOGIN_CHAT_ID` | Login chat ID — auth URL, TOTP, success/failure, /hld /rst responses |
 | `FYERS_TRADE_BOT_TOKEN` | Fyers trade bot token |
@@ -367,6 +368,24 @@ At 16:30 IST (SummaryScheduler checks every 30s):
 - `Dockerfile` also available (python:3.12-slim, runs `python main.py`)
 
 ## Changelog
+
+### 2026-07-23 - Automated headless login (REFERENCE parity)
+- New `services/auth_service/totp_login.py`: headless 5-step Fyers TOTP flow
+  (send_login_otp → verify_otp → verify_pin → /api/v3/token → validate-authcode),
+  plus PIN-only `refresh_access_token` and bounded, cancellable
+  `full_totp_login_with_retry` (5 attempts, 60s apart). `fyers_apiv3` lazy-imported.
+- `FyersAuthenticator.authenticate()` is now a ladder: cached token → PIN-only
+  refresh → automated TOTP → manual Telegram-link fallback (`_manual_login`).
+  Blocking login runs via `asyncio.to_thread`; the 60s waits are sliced so `/hld`
+  and `/rst` interrupt mid-login.
+- `fyers_tokens` gains a nullable `refresh_token` column (auto-migrated via
+  `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`); `load_token()` now returns a
+  4-tuple `(token, timestamp, created_at, refresh_token)`.
+- New env var `FYERS_USERNAME` (fy_id); new constants `AUTO_LOGIN_MAX_ATTEMPTS=5`,
+  `AUTO_LOGIN_RETRY_DELAY=60`.
+- Unit tests: `tests/test_totp_login.py` (19 tests, loaded via importlib so the
+  suite runs without `fyers_apiv3`). No change to detectors, summaries, commands,
+  scheduling, MCP, or the webhook path.
 
 ### 2026-03-04 - Initial modular architecture
 - Merged `tests/fyers.py` (1721 lines), `tests/penny.py` (1552 lines), `tests/health.py` (57 lines) into modular service architecture
