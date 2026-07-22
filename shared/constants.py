@@ -7,6 +7,10 @@ IST = ZoneInfo("Asia/Kolkata")
 MARKET_START_TIME = "09:13"
 MARKET_END_TIME = "16:00"
 
+# Daily token wipe — clear stored credentials each evening so the next
+# 09:13 login is always a fresh full TOTP login (17:00 IST, after market close).
+DAILY_TOKEN_RESET_TIME = "17:00"
+
 # Detection thresholds
 FYERS_TRADE_THRESHOLD = 30_000_000    # Rs 3 crore
 PENNY_TRADE_THRESHOLD = 5_000_000     # Rs 50 lakh (0.50 Cr)

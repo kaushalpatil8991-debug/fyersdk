@@ -369,6 +369,19 @@ At 16:30 IST (SummaryScheduler checks every 30s):
 
 ## Changelog
 
+### 2026-07-23 - Daily 17:00 token wipe + summary trigger hardening
+- **Daily fresh login**: at 17:00 IST (after market close) the orchestrator wipes
+  `fyers_tokens` (`TokenManager.clear_tokens()`), resets in-memory auth state
+  (`FyersAuthenticator.reset()`), and forces service rebuild (`_services_built`),
+  so the next 09:13 is always a fresh full TOTP login. Gated once-per-day by the
+  pure `should_reset_tokens()` helper (`shared.constants.DAILY_TOKEN_RESET_TIME`).
+- **Summary scheduler**: send trigger changed from exact `== "16:30"` to
+  `>= SUMMARY_SEND_TIME` (once-per-day guard unchanged) so a missed exact minute
+  (process asleep / event loop blocked) still fires later that evening instead of
+  dropping the day's summary.
+- `services_built` promoted from a `run()` local to `self._services_built`.
+- Tests: `tests/test_schedular.py` (5) covering the daily-reset time gate.
+
 ### 2026-07-23 - Automated headless login (REFERENCE parity)
 - New `services/auth_service/totp_login.py`: headless 5-step Fyers TOTP flow
   (send_login_otp → verify_otp → verify_pin → /api/v3/token → validate-authcode),

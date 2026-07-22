@@ -29,8 +29,10 @@ class SummaryScheduler:
                 if self._last_sent_date and self._last_sent_date != current_date:
                     self._last_sent_date = None
 
-                # Send at configured time, once per day
-                if current_time == SUMMARY_SEND_TIME and self._last_sent_date != current_date:
+                # Send at or after the configured time, once per day. Using >=
+                # (not ==) so a missed exact minute — process asleep or event
+                # loop briefly blocked at 16:30 — still fires later that evening.
+                if current_time >= SUMMARY_SEND_TIME and self._last_sent_date != current_date:
                     log.info(f"Triggering summaries at {current_time}")
                     for gen in self.generators:
                         await gen.send_summary()

@@ -40,6 +40,16 @@ class FyersAuthenticator:
         """Clear cancellation flag before a new auth attempt."""
         self._cancel_event.clear()
 
+    def reset(self):
+        """Clear in-memory auth state so the next authenticate() starts fresh.
+
+        Used by the daily 17:00 token wipe — combined with a cleared token DB,
+        this forces a full fresh login at the next market open.
+        """
+        self.is_authenticated = False
+        self.access_token = None
+        self.fyers_model = None
+
     def check_token_with_fyers(self) -> tuple[bool, str]:
         """Verify token by calling Fyers profile API."""
         if not self.access_token:

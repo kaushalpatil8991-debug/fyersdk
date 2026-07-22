@@ -67,6 +67,14 @@ class TokenManager:
             conn.commit()
         log.info("Token saved to Supabase")
 
+    def clear_tokens(self):
+        """Delete all stored tokens — daily reset forces a fresh login next open."""
+        with self._get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM fyers_tokens")
+            conn.commit()
+        log.info("All tokens cleared from Supabase")
+
     def is_token_valid_by_time(self) -> tuple[bool, str]:
         """Check token validity based on timestamp."""
         token, ts, _, _ = self.load_token()

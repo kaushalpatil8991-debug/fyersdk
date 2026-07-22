@@ -1,7 +1,9 @@
 """Orchestrates both detectors with market-hour scheduling."""
 import asyncio
+from datetime import datetime
 from shared.logger import get_logger
 from shared.config_loader import AppConfig
+from shared.constants import IST
 from services.auth_service.authenticator import FyersAuthenticator
 from services.auth_service.token_manager import TokenManager
 from services.auth_service.models import AuthState
@@ -12,7 +14,7 @@ from services.sector_service import SymbolManager, init_sector_mapping
 from services.detector_service.websocket_manager import TickDispatcher
 from services.fyers_service import FyersService, FyersSummaryService
 from services.penny_service import PennyService, PennySummaryService
-from .schedular import is_market_hours
+from .schedular import is_market_hours, should_reset_tokens
 
 log = get_logger("orchestrator")
 
@@ -51,6 +53,8 @@ class Orchestrator:
         self.on_hold = False
         self.restart_requested = False
         self._dispatcher: TickDispatcher | None = None
+        self._services_built = False
+        self._last_reset_date: str | None = None
 
         # Isolated summary services
         self.fyers_summary = FyersSummaryService(
@@ -98,6 +102,26 @@ class Orchestrator:
         )
         self._dispatcher.connect()
 
+    async def _daily_token_reset(self, today: str):
+        """17:00 IST wipe — clear tokens + auth state so 09:13 is a fresh login.
+
+        Stops detectors (already stopped after 16:00 close), deletes stored
+        tokens, resets in-memory auth state, and forces services to rebuild with
+        the new token at the next open (via _services_built=False).
+        """
+        log.info("Daily 17:00 token reset — clearing credentials for a fresh login")
+        self.fyers.stop()
+        self.penny.stop()
+        self._close_dispatcher()
+        self.token_manager.clear_tokens()
+        self.authenticator.reset()
+        self._services_built = False
+        self._last_reset_date = today
+        await self.login_sender.send_async(
+            "<b>Daily token reset</b>\nCredentials cleared at 17:00 IST. "
+            "A fresh login will run automatically at 09:13 tomorrow."
+        )
+
     async def _re_authenticate(self):
         """Stop detectors, get fresh token, update both services."""
         log.info("Token rejected by Fyers — re-authenticating...")
@@ -132,11 +156,17 @@ class Orchestrator:
         sectors = self.symbol_manager.load_sector_mapping()
         init_sector_mapping(sectors)
 
-        # Track whether services have been built with a token
-        services_built = False
-
         while True:
             try:
+                # Daily 17:00 IST token wipe -> guarantees a fresh 09:13 login.
+                # Runs regardless of hold/market state so the invariant always holds.
+                now = datetime.now(IST)
+                if should_reset_tokens(
+                    now.strftime("%H:%M"), self._last_reset_date,
+                    now.strftime("%d-%m-%Y"),
+                ):
+                    await self._daily_token_reset(now.strftime("%d-%m-%Y"))
+
                 if self.restart_requested:
                     self.restart_requested = False
                     self.fyers.stop()
@@ -165,12 +195,13 @@ class Orchestrator:
                         # Auth was cancelled by /hld or /rst — loop back
                         continue
 
-                # Build services once after first successful auth
-                if not services_built:
+                # Build services once after first successful auth (rebuilt after
+                # each daily reset so they pick up the fresh token cleanly).
+                if not self._services_built:
                     token = self.authenticator.access_token
                     self.fyers.build(token, fyers_symbols, sectors)
                     self.penny.build(token, penny_symbols, sectors)
-                    services_built = True
+                    self._services_built = True
 
                 if self._any_token_expired():
                     await self._re_authenticate()
