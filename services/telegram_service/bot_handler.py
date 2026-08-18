@@ -24,7 +24,15 @@ class TelegramSender:
                       "parse_mode": parse_mode},
                 timeout=10
             )
-            return resp.status_code == 200
+            if resp.status_code == 200:
+                return True
+            # Telegram explains every refusal in the body — revoked token,
+            # wrong or migrated chat_id, bot removed from the group, HTML
+            # parse error. Without this a rejected send is indistinguishable
+            # from having had no data to send.
+            log.error(f"Telegram refused send to {self.chat_id}: "
+                      f"HTTP {resp.status_code} {resp.text}")
+            return False
         except Exception as e:
             log.error(f"Send failed to {self.chat_id}: {e}")
             return False

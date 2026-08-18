@@ -53,6 +53,7 @@ class Orchestrator:
         self.on_hold = False
         self.restart_requested = False
         self._dispatcher: TickDispatcher | None = None
+        self._summary_task: asyncio.Task | None = None
         self._services_built = False
         self._last_reset_date: str | None = None
 
@@ -148,7 +149,10 @@ class Orchestrator:
         # Start summary scheduler (runs independently at 16:30 IST)
         generators = [self.fyers_summary.generator, self.penny_summary.generator]
         summary_scheduler = SummaryScheduler(generators)
-        asyncio.create_task(summary_scheduler.run())
+        # Keep a strong reference: the event loop only holds a weak one, so an
+        # un-stored task can be garbage-collected mid-flight, silently killing
+        # the 16:30 summaries for the rest of the process's life.
+        self._summary_task = asyncio.create_task(summary_scheduler.run())
 
         # Load symbols and sectors from Supabase
         fyers_symbols = self.symbol_manager.load_symbols("fyers")

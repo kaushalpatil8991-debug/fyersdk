@@ -369,6 +369,32 @@ At 16:30 IST (SummaryScheduler checks every 30s):
 
 ## Changelog
 
+### 2026-08-19 - Surface Telegram send failures (equity summary outage)
+- **Root cause of silent outage**: `TelegramSender.send()` did
+  `return resp.status_code == 200` and discarded the response body, so a
+  rejected send (revoked token, wrong/migrated `chat_id`, bot removed from the
+  group, HTML parse error, 429 flood control) was indistinguishable from
+  "no data to send". Now logs status code, chat ID, and Telegram's
+  `description` on any non-200. Covers both the trade-alert and summary paths.
+- **Scheduler fan-out isolation**: extracted `SummaryScheduler._send_all()`.
+  Previously a raising generator aborted the whole `for` loop — a fyers failure
+  silently suppressed the penny summary too — and left `_last_sent_date` unset,
+  re-running survivors every 60s until midnight. Each generator is now wrapped;
+  `_send_all()` never propagates, so the day is always marked done.
+- **Summary task GC hazard**: `asyncio.create_task(summary_scheduler.run())`
+  kept no reference; the event loop holds only a weak one, so the task could be
+  garbage-collected mid-flight, killing the 16:30 summaries for the life of the
+  process. Now stored as `self._summary_task`.
+- Diagnosis notes: the fyers detector, sheet writes, and summary generation were
+  all verified healthy against the live deployment via the MCP
+  `get_volume_summary` tool (it calls the same generator instance the 16:30
+  scheduler uses). The fault was confined to Telegram delivery on both fyers
+  bots. Known latent risk, not yet fixed: no HTML escaping anywhere, so
+  `NSE:M&M-EQ`, `NSE:J&KBANK-EQ` and sectors like `Oil & Gas` go raw into
+  `parse_mode=HTML`.
+- Tests: `tests/test_telegram.py` (4), `tests/test_summary_scheduler.py` (4),
+  plus `tests/conftest.py` to put the repo root on `sys.path`.
+
 ### 2026-07-23 - Daily 17:00 token wipe + summary trigger hardening
 - **Daily fresh login**: at 17:00 IST (after market close) the orchestrator wipes
   `fyers_tokens` (`TokenManager.clear_tokens()`), resets in-memory auth state
