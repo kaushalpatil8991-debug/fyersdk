@@ -1,7 +1,8 @@
 """Market-hours scheduling."""
 from datetime import datetime
 from shared.constants import (
-    MARKET_START_TIME, MARKET_END_TIME, DAILY_TOKEN_RESET_TIME, IST,
+    MARKET_START_TIME, MARKET_END_TIME, DAILY_TOKEN_RESET_TIME,
+    WS_REBUILD_COOLDOWN, IST,
 )
 from shared.logger import get_logger
 
@@ -24,3 +25,18 @@ def should_reset_tokens(current_hhmm: str, last_reset_date: str | None,
     means a missed exact minute still fires later the same evening.
     """
     return current_hhmm >= DAILY_TOKEN_RESET_TIME and last_reset_date != today
+
+
+def should_rebuild_socket(needs_rebuild: bool, last_rebuild_ts: float | None,
+                          now_ts: float,
+                          cooldown: float = WS_REBUILD_COOLDOWN) -> bool:
+    """True when an unhealthy WebSocket is due to be torn down and rebuilt.
+
+    Pure and testable. The cooldown stops a socket that cannot come back up
+    (Fyers down, token dead) from rebuilding — and alerting — on every tick.
+    """
+    if not needs_rebuild:
+        return False
+    if last_rebuild_ts is None:
+        return True
+    return (now_ts - last_rebuild_ts) >= cooldown

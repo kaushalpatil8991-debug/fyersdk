@@ -71,3 +71,12 @@ def summary_date_invalid_message() -> str:
 
 def summary_date_confirm_message(date_str: str, day_name: str) -> str:
     return f"<b>Generating summaries for {date_str} ({day_name})...</b>\n\nPlease wait."
+
+
+def websocket_rebuild_message() -> str:
+    return (
+        "<b>WebSocket Rebuild</b>\n\n"
+        "The Fyers feed stopped delivering ticks (dropped socket, exhausted "
+        "reconnects, or a subscription that never landed).\n"
+        "Tearing it down and reconnecting now."
+    )

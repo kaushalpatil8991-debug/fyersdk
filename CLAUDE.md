@@ -369,6 +369,44 @@ At 16:30 IST (SummaryScheduler checks every 30s):
 
 ## Changelog
 
+### 2026-08-19 - WebSocket never recovered from a drop (mid-morning data stop)
+- **Root cause**: the Fyers SDK's `__on_close` wipes `scrips_per_channel` and
+  `symbol_token` before reconnecting, and its reconnect path never re-subscribes
+  (`__on_open` sends only auth + mode). The app called `subscribe()` exactly
+  once, at startup. So the first socket drop left it open and authenticated but
+  subscribed to nothing — no ticks, no alerts, no sheet rows, for the rest of
+  the process's life. Verified identical on 3.1.7 and the deployed 3.1.16.
+- **Why it stayed invisible**: `RunController.is_running` stays True (the
+  detector thread just blocks on `stop_event.wait()`), so `/health` reported
+  healthy; the `on_close` callback fires *only* on a deliberate close, never on
+  a drop; and after the retry budget is exhausted the SDK only prints
+  "Connection abandoned" without any callback at all.
+- **Fix**: register `on_connect` and re-subscribe on every open. Gated on the
+  socket actually being open — `__on_open` REBINDS its outbound queue
+  (`self.message = []`), so a timer-based subscribe races it and is discarded.
+  Also registers `on_error`/`on_close` and raises `reconnect_retry` 5 -> 50.
+- **Liveness supervision**: `is_alive()` reads `sock.connected` (the SDK's
+  `is_connected()` only checks that its ws object exists, so it keeps returning
+  True after abandonment). `needs_rebuild()` also covers "came up without a
+  subscription". The orchestrator polls it and rebuilds, gated by the pure
+  `should_rebuild_socket()` helper with `WS_REBUILD_COOLDOWN=60`.
+- **token_expired is real now**: `TickDispatcher._on_auth_error` sets it on
+  every detector when Fyers rejects auth (`type="cn"`, codes -99/-300). Nothing
+  in the system had ever set it, so the documented reactive-refresh path was
+  dead code.
+- **Zombie-socket leak**: `close_connection()` is guarded on `__ws_object`, so
+  closing during a reconnect window did nothing and left `restart_flag` True —
+  the old instance kept reconnecting forever holding stale detector callbacks.
+  `close()` now clears `restart_flag` first.
+- `_connect_dispatcher()` moved to `asyncio.to_thread` — it can now block up to
+  `SOCKET_OPEN_TIMEOUT`, which would otherwise stall the webhook, health check
+  and summary scheduler.
+- Tests: `tests/test_websocket_manager.py` (12), 4 added to
+  `tests/test_schedular.py`. 48 passing.
+- Still open: no tick-level watchdog (a socket that is connected but silently
+  delivering nothing is not yet detected); `fyers-apiv3>=3.0.0` is unpinned and
+  this fix depends on SDK internals.
+
 ### 2026-08-19 - Surface Telegram send failures (equity summary outage)
 - **Root cause of silent outage**: `TelegramSender.send()` did
   `return resp.status_code == 200` and discarded the response body, so a

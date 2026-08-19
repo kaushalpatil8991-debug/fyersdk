@@ -40,3 +40,22 @@ def test_should_not_reset_twice_same_day():
 
 def test_should_not_reset_in_the_morning():
     assert sched.should_reset_tokens("09:13", None, "23-07-2026") is False
+
+
+# --- websocket rebuild gate -------------------------------------------
+
+def test_no_rebuild_when_socket_is_healthy():
+    assert sched.should_rebuild_socket(False, None, 1000.0) is False
+
+
+def test_rebuild_immediately_on_first_unhealthy_check():
+    assert sched.should_rebuild_socket(True, None, 1000.0) is True
+
+
+def test_no_rebuild_inside_cooldown():
+    """A hard-down socket must not be rebuilt (and alerted) every 5s."""
+    assert sched.should_rebuild_socket(True, 1000.0, 1030.0, cooldown=60) is False
+
+
+def test_rebuild_again_once_cooldown_elapsed():
+    assert sched.should_rebuild_socket(True, 1000.0, 1060.0, cooldown=60) is True

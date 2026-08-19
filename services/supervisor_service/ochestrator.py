@@ -1,5 +1,6 @@
 """Orchestrates both detectors with market-hour scheduling."""
 import asyncio
+import time
 from datetime import datetime
 from shared.logger import get_logger
 from shared.config_loader import AppConfig
@@ -8,13 +9,17 @@ from services.auth_service.authenticator import FyersAuthenticator
 from services.auth_service.token_manager import TokenManager
 from services.auth_service.models import AuthState
 from services.telegram_service import TelegramSender
-from services.telegram_service.message_template import monitoring_started_message
+from services.telegram_service.message_template import (
+    monitoring_started_message, websocket_rebuild_message,
+)
 from services.summary_service import SummaryScheduler
 from services.sector_service import SymbolManager, init_sector_mapping
 from services.detector_service.websocket_manager import TickDispatcher
 from services.fyers_service import FyersService, FyersSummaryService
 from services.penny_service import PennyService, PennySummaryService
-from .schedular import is_market_hours, should_reset_tokens
+from .schedular import (
+    is_market_hours, should_reset_tokens, should_rebuild_socket,
+)
 
 log = get_logger("orchestrator")
 
@@ -54,6 +59,7 @@ class Orchestrator:
         self.restart_requested = False
         self._dispatcher: TickDispatcher | None = None
         self._summary_task: asyncio.Task | None = None
+        self._last_ws_rebuild: float | None = None
         self._services_built = False
         self._last_reset_date: str | None = None
 
@@ -211,8 +217,26 @@ class Orchestrator:
                     await self._re_authenticate()
                     continue
 
+                # Nothing in the SDK reports a socket that has died or given
+                # up reconnecting, so poll for it. Without this a drop stays
+                # invisible and detection silently stops for the rest of the
+                # day while /health still reports healthy.
+                if self._dispatcher and should_rebuild_socket(
+                    self._dispatcher.needs_rebuild(),
+                    self._last_ws_rebuild, time.monotonic(),
+                ):
+                    log.error("WebSocket unhealthy — rebuilding dispatcher")
+                    self._close_dispatcher()
+                    self._last_ws_rebuild = time.monotonic()
+                    await self.login_sender.send_async(
+                        websocket_rebuild_message()
+                    )
+
                 if not self._dispatcher:
-                    self._connect_dispatcher()
+                    # Blocking: waits for the socket to open, then subscribes.
+                    # Kept off the event loop so the webhook, health check and
+                    # summary scheduler stay responsive meanwhile.
+                    await asyncio.to_thread(self._connect_dispatcher)
                     await self.login_sender.send_async(
                         monitoring_started_message(
                             len(self.fyers.detector.config.symbols),
