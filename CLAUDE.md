@@ -364,10 +364,45 @@ At 16:30 IST (SummaryScheduler checks every 30s):
 
 - Hosted on **Render.com** at `https://fyers-volume-spike-detector.onrender.com`
 - Self-ping every 7 min to prevent Render free-tier sleep
-- `render.yaml`: Python 3.11.7, `TZ=Asia/Kolkata`, port 10000
+- `render.yaml`: Python 3.11.7, `TZ=Asia/Kolkata`, port 10000 (the live host
+  has run on UTC anyway, so always use `datetime.now(IST)`, never a plain `datetime.now()`)
 - `Dockerfile` also available (python:3.12-slim, runs `python main.py`)
 
 ## Changelog
+
+### 2026-09-19 - Penny Sheet data history: UTC timestamps and wrong-detector rows
+- Found while joining Penny Sheet spikes to Fyers 1-minute candles in the
+  analyzer project. **No code change**: current code stamps every row with
+  explicit IST. This records what the historical Sheet data looks like, so any
+  time-of-day analysis can correct it.
+- **UTC until 2026-03-04 15:46 IST**: the old scripts (`tests/penny.py:1319`)
+  and the first modular commit `f462b25` stamped Date/Time with a plain
+  `datetime.now()`. The Render host evidently ran on UTC despite `TZ` in
+  `render.yaml`, so don't rely on that setting. `6e6f0ae` (15:46 IST) switched
+  `trade_analyzer` to `datetime.now(IST)`. All rows from 2026-03-05 on are IST.
+  On 2026-03-04 only the last 2 rows (15:51–15:54) are IST.
+- **Sanity bound**: the scanner window is 09:13–16:00 IST, so a UTC-stamped row
+  always reads 03:43–10:30. Any row before the switch that reads later than
+  10:30 is IST.
+- **Fyers-scanner rows in the Penny Sheet**: 2,860 rows on 2026-02-02, 02-03,
+  02-04, 02-13, 02-16 and 02-17. Every symbol is on the fyers list and none is
+  on any penny list, the smallest `Trd_Val_Cr` is exactly 3.0 (the fyers
+  threshold), and the times are IST. So on those days, IST-stamped rows are the
+  fyers scanner's rows. The committed `tests/fyers.py` writes to a different
+  Sheet ID, so the source was probably a local copy pointed at the Penny Sheet
+  (not confirmed). The count is a floor: 57 symbols are on both lists.
+- **Large caps at the penny threshold**: 1,488 rows of fyers-list symbols
+  judged at the penny Rs 0.55 Cr threshold. On 2026-03-04 they read
+  09:47–10:07 (UTC, so 15:17–15:37 IST, the first modular deploy); on
+  2026-03-05 they run 09:15–09:59 IST. Before `TickDispatcher` (`199ef6c`,
+  2026-03-05 11:14 IST), the shared `FyersDataSocket` delivered fyers ticks to
+  the penny detector. Clean rows resume at 11:15.
+- **Impact**: about 4,348 of 234,586 Penny Sheet rows (1.9%) come from the
+  wrong detector. Drop or flag them rather than time-correcting them. `/sdt`
+  summaries for those dates include them too.
+- Not verified: the UTC reading of the 2026-03-04 burst rests on timing, not
+  candle prices. It starts 11 minutes after `f462b25`, and the old script's
+  rows stop at 15:14 IST.
 
 ### 2026-08-19 - WebSocket never recovered from a drop (mid-morning data stop)
 - **Root cause**: the Fyers SDK's `__on_close` wipes `scrips_per_channel` and
